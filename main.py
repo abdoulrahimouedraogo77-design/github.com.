@@ -18,15 +18,11 @@ def send_telegram(text):
         "disable_web_page_preview": True
     }
     try:
-        r = requests.post(url, json=payload, timeout=10)
-        print(f"[Telegram Send] Statut: {r.status_code}")
-        if r.status_code != 200:
-            print(f"[Telegram Error] {r.text}")
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
         print(f"[Erreur Envoi] : {e}")
 
 def scanner_et_envoyer():
-    print("[Scan] Lancement du scan DexScreener...")
     send_telegram("🔎 *Recherche de tokens Solana en cours...*")
     url = "https://api.dexscreener.com/latest/dex/search?q=solana"
     try:
@@ -70,28 +66,15 @@ def scanner_et_envoyer():
                 send_telegram(msg)
 
         if trouves == 0:
-            send_telegram("ℹ️ *Aucun token ne remplit les critères actuels (MC > $15k, Vol5m > $3k).*")
-        else:
-            print(f"[Scan Terminé] {trouves} token(s) envoyés.")
+            send_telegram("ℹ️ *Aucun token ne remplit les critères (MC > $15k, Vol5m > $3k) pour le moment.*")
     except Exception as e:
-        print(f"[Erreur Scan] : {e}")
         send_telegram(f"⚠️ Erreur lors du scan : {e}")
 
 def main():
-    print("=== Scanner interactif prêt et en écoute ===")
-    send_telegram("🚀 *Scanner prêt !* Envoyez la lettre *s* pour lancer un scan.")
+    print("=== Démarrage du scanner interactif ===")
+    send_telegram("🚀 *Scanner prêt !* Envoyez *s* pour lancer un scan.")
 
-    # Récupérer l'offset le plus récent pour ne pas être bloqué par les vieux messages
     offset = None
-    try:
-        init_r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates", timeout=10).json()
-        results = init_r.get("result", [])
-        if results:
-            offset = results[-1]["update_id"] + 1
-            print(f"[Init] Offset calé sur {offset}")
-    except Exception as e:
-        print(f"[Init Error] {e}")
-
     while True:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
@@ -106,14 +89,12 @@ def main():
                 offset = item["update_id"] + 1
                 msg = item.get("message", {})
                 texte = msg.get("text", "").strip().lower()
-                print(f"[Message reçu] : '{texte}'")
 
                 if texte in ["s", "scan", "/scan", "/start"]:
                     scanner_et_envoyer()
 
         except Exception as e:
-            print(f"[Loop Error] : {e}")
-            time.sleep(3)
+            time.sleep(2)
 
 if __name__ == "__main__":
     main()
