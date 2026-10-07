@@ -1,77 +1,106 @@
-import os
 import time
 import requests
 
-TELEGRAM_BOT_TOKEN = "8646433044:AAHVmXRdyIZ5UGcNkwvIPMWG42VhOGz1Uxo"
+TELEGRAM_BOT_TOKEN = "8646433044:AAHVmXRdyIZ5UGeNkwvJPMWG42Vh0Gz1Uxo"
 TELEGRAM_CHAT_ID = "8762743073"
 
-MIN_AGE_SECONDS = 5 * 60
-MAX_AGE_SECONDS = 12 * 3600
 MIN_MARKET_CAP = 15000
 MIN_VOLUME_5M = 3000
+MIN_AGE_SECONDS = 5 * 60
+MAX_AGE_SECONDS = 12 * 3600
 
-seen_tokens = set()
-
-def send_alert(name, symbol, ca, mc, vol, age_min):
+def send_telegram(text, reply_markup=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    message = (
-        f"🚨 *NOUVEAU TOKEN VALIDÉ* 🚨\n\n"
-        f"🪙 *Nom:* {name} (${symbol})\n"
-        f"⏱️ *Âge:* {age_min:.0f} minutes\n"
-        f"💰 *Market Cap:* ${mc:,.0f}\n"
-        f"📊 *Volume 5m:* ${vol:,.0f}\n\n"
-        f"📋 *Contrat (Clique pour copier) :*\n`{ca}`\n\n"
-        f"🔗 [Ouvrir sur GMGN](https://gmgn.ai/sol/token/{ca})"
-    )
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
+        "text": text,
         "parse_mode": "Markdown",
         "disable_web_page_preview": True
     }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     try:
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
-        print(f"Erreur d'envoi: {e}")
+        print(f"Erreur d'envoi : {e}")
 
-def run_scanner():
+def scanner_et_envoyer():
+    send_telegram("🔎 *Recherche de tokens Solana en cours...*")
     url = "https://api.dexscreener.com/latest/dex/search?q=solana"
     try:
         resp = requests.get(url, timeout=10)
         data = resp.json()
-        pairs = data.get("pairs", [])
+        pairs = data.get("pairs") or []
         now_ms = time.time() * 1000
+        trouves = 0
 
         for pair in pairs:
             if pair.get("chainId") != "solana":
-                continue
-
-            ca = pair.get("baseToken", {}).get("address")
-            if not ca or ca in seen_tokens:
                 continue
 
             created_at = pair.get("pairCreatedAt", 0)
             if not created_at:
                 continue
 
-            age_seconds = (now_ms - created_at) / 1000
+            age_sec = (now_ms - created_at) / 1000
+            if not (MIN_AGE_SECONDS <= age_sec <= MAX_AGE_SECONDS):
+                continue
 
-            if MIN_AGE_SECONDS <= age_seconds <= MAX_AGE_SECONDS:
-                mc = pair.get("marketCap", 0) or pair.get("fdv", 0)
-                vol_5m = pair.get("volume", {}).get("m5", 0)
+            mc = pair.get("marketCap") or pair.get("fdv", 0)
+            vol_5m = pair.get("volume", {}).get("m5", 0)
 
-                if mc >= MIN_MARKET_CAP and vol_5m >= MIN_VOLUME_5M:
-                    seen_tokens.add(ca)
-                    name = pair.get("baseToken", {}).get("name", "Unknown")
-                    symbol = pair.get("baseToken", {}).get("symbol", "TOKEN")
-                    
-                    send_alert(name, symbol, ca, mc, vol_5m, age_seconds / 60)
-                    print(f"Contrat envoyé: {symbol} ({ca})")
+            if mc >= MIN_MARKET_CAP and vol_5m >= MIN_VOLUME_5M:
+                trouves += 1
+                nom = pair.get("baseToken", {}).get("name", "Inconnu")
+                sym = pair.get("baseToken", {}).get("symbol", "")
+                ca = pair.get("baseToken", {}).get("address", "")
+                age_min = age_sec / 60
+
+                msg = (
+                    f"🚨 *TOKEN DÉTECTÉ*\n\n"
+                    f"🪙 *Nom :* {nom} ({sym})\n"
+                    f"⏳ *Âge :* {age_min:.0f} min\n"
+                    f"💰 *Market Cap :* ${mc:,.0f}\n"
+                    f"📊 *Volume 5m :* ${vol_5m:,.0f}\n\n"
+                    f"📋 *Contrat :*\n`{ca}`\n\n"
+                    f"🔗 [Voir sur GMGN](https://gmgn.ai/sol/token/{ca})"
+                )
+                send_telegram(msg)
+
+        if trouves == 0:
+            send_telegram("ℹ️ *Aucun token ne remplit les critères pour le moment.*")
     except Exception as e:
-        print(f"Erreur scan: {e}")
+        send_telegram(f"⚠️ Erreur lors du scan : {e}")
+
+def main():
+    print("Démarrage du scanner interactif...")
+    clavier = {
+        "keyboard": [[{"text": "s"}]],
+        "resize_keyboard": True,
+        "one_time_keyboard": False
+    }
+    send_telegram("✅ *Scanner connecté !*\nAppuyez sur la touche *s* ci-dessous pour déclencher un scan.", reply_markup=clavier)
+
+    offset = None
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+            params = {"timeout": 30}
+            if offset:
+                params["offset"] = offset
+
+            r = requests.get(url, params=params, timeout=35).json()
+            for item in r.get("result", []):
+                offset = item["update_id"] + 1
+                msg = item.get("message", {})
+                texte = msg.get("text", "").strip().lower()
+
+                if texte in ["s", "scan", "/scan"]:
+                    scanner_et_envoyer()
+                elif texte == "/start":
+                    send_telegram("Bot prêt. Appuyez sur *s* pour scanner le marché.", reply_markup=clavier)
+        except Exception:
+            time.sleep(2)
 
 if __name__ == "__main__":
-    print("Démarrage du scanner cloud...")
-    while True:
-        run_scanner()
-        time.sleep(20)
+    main()
