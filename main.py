@@ -5,7 +5,7 @@ import requests
 # Force l'affichage immédiat dans les logs Railway
 sys.stdout.reconfigure(line_buffering=True)
 
-TELEGRAM_BOT_TOKEN = "8646433044:AAHVmXRdyIZ5UGeNkwvJPMWG42Vh0Gz1Uxo"
+TELEGRAM_BOT_TOKEN = 8646433044:AAGlwrPeXXbnL-EGCKJBFPpZkEIJzWBRUuY
 TELEGRAM_CHAT_ID = "8762743073"
 
 MIN_MARKET_CAP = 15000
