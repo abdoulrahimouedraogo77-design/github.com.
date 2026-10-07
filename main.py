@@ -2,7 +2,7 @@ import sys
 import time
 import requests
 
-# Forcer l'affichage immédiat des logs
+# Force l'affichage immédiat dans les logs Railway
 sys.stdout.reconfigure(line_buffering=True)
 
 TELEGRAM_BOT_TOKEN = "8646433044:AAHVmXRdyIZ5UGeNkwvJPMWG42Vh0Gz1Uxo"
@@ -73,39 +73,49 @@ def scanner_et_envoyer():
                 send_telegram(msg)
 
         if trouves == 0:
-            send_telegram("ℹ️ <b>Aucun token ne remplit les filtres actuels pour le moment.</b>")
-        print(f"[Action] Scan terminé. {trouves} token(s) envoyés.")
+            send_telegram("ℹ️ <b>Aucun token ne remplit les critères (MC > $15k, Vol5m > $3k).</b>")
+        print(f"[Action] Scan terminé : {trouves} token(s) envoyés.")
     except Exception as e:
         print(f"[Erreur DexScreener] {e}")
         send_telegram(f"⚠️ Erreur lors du scan : {e}")
 
 def main():
-    print("=== Bot démarré avec succès ===")
-    send_telegram("🚀 <b>Scanner connecté et prêt !</b>\nEnvoyez la lettre <b>s</b> pour scanner.")
+    print("=== Nettoyage et initialisation Telegram ===")
+    
+    # Étape 1 : Débloquer Telegram (supprime tout ancien webhook résiduel)
+    try:
+        del_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true"
+        requests.get(del_url, timeout=10)
+        print("[Telegram] Webhook supprimé et file nettoyée avec succès.")
+    except Exception as e:
+        print(f"[Telegram Init Warning] {e}")
 
-    # Récupération propre des messages
+    # Étape 2 : Envoyer le message de confirmation
+    send_telegram("🟢 <b>Scanner interactif opérationnel !</b>\nEnvoyez la lettre <b>s</b> pour scanner.")
+
+    # Étape 3 : Écoute en continu
     offset = None
     while True:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-            params = {"timeout": 10}
+            params = {"timeout": 15}
             if offset:
                 params["offset"] = offset
 
-            resp = requests.get(url, params=params, timeout=15)
+            resp = requests.get(url, params=params, timeout=20)
             data = resp.json()
 
             for item in data.get("result", []):
                 offset = item["update_id"] + 1
                 msg = item.get("message", {})
                 texte = msg.get("text", "").strip().lower()
-                print(f"[Message reçu] : {texte}")
+                print(f"[Commande reçue] : {texte}")
 
                 if texte in ["s", "scan", "/scan", "/start"]:
                     scanner_et_envoyer()
 
         except Exception as e:
-            print(f"[Boucle Telegram] {e}")
+            print(f"[Erreur boucle] {e}")
             time.sleep(2)
 
 if __name__ == "__main__":
