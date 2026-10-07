@@ -1,5 +1,9 @@
+import sys
 import time
 import requests
+
+# Forcer l'affichage immédiat des logs
+sys.stdout.reconfigure(line_buffering=True)
 
 TELEGRAM_BOT_TOKEN = "8646433044:AAHVmXRdyIZ5UGeNkwvJPMWG42Vh0Gz1Uxo"
 TELEGRAM_CHAT_ID = "8762743073"
@@ -14,16 +18,19 @@ def send_telegram(text):
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
-        "parse_mode": "Markdown",
+        "parse_mode": "HTML",
         "disable_web_page_preview": True
     }
     try:
-        requests.post(url, json=payload, timeout=10)
+        r = requests.post(url, json=payload, timeout=10)
+        print(f"[Telegram Send] Code {r.status_code}")
     except Exception as e:
-        print(f"[Erreur Envoi] : {e}")
+        print(f"[Erreur Telegram] {e}")
 
 def scanner_et_envoyer():
-    send_telegram("🔎 *Recherche de tokens Solana en cours...*")
+    print("[Action] Scan Solana en cours...")
+    send_telegram("🔎 <b>Recherche de tokens Solana en cours...</b>")
+    
     url = "https://api.dexscreener.com/latest/dex/search?q=solana"
     try:
         resp = requests.get(url, timeout=10)
@@ -55,45 +62,50 @@ def scanner_et_envoyer():
                 age_min = age_sec / 60
 
                 msg = (
-                    f"🚨 *TOKEN DÉTECTÉ*\n\n"
-                    f"🪙 *Nom :* {nom} ({sym})\n"
-                    f"⏳ *Âge :* {age_min:.0f} min\n"
-                    f"💰 *Market Cap :* ${mc:,.0f}\n"
-                    f"📊 *Volume 5m :* ${vol_5m:,.0f}\n\n"
-                    f"📋 *Contrat :*\n`{ca}`\n\n"
-                    f"🔗 [Voir sur GMGN](https://gmgn.ai/sol/token/{ca})"
+                    f"🚨 <b>TOKEN DÉTECTÉ</b>\n\n"
+                    f"🪙 <b>Nom :</b> {nom} ({sym})\n"
+                    f"⏳ <b>Âge :</b> {age_min:.0f} min\n"
+                    f"💰 <b>Market Cap :</b> ${mc:,.0f}\n"
+                    f"📊 <b>Volume 5m :</b> ${vol_5m:,.0f}\n\n"
+                    f"📋 <b>Contrat :</b>\n<code>{ca}</code>\n\n"
+                    f"🔗 <a href='https://gmgn.ai/sol/token/{ca}'>Voir sur GMGN</a>"
                 )
                 send_telegram(msg)
 
         if trouves == 0:
-            send_telegram("ℹ️ *Aucun token ne remplit les critères (MC > $15k, Vol5m > $3k) pour le moment.*")
+            send_telegram("ℹ️ <b>Aucun token ne remplit les filtres actuels pour le moment.</b>")
+        print(f"[Action] Scan terminé. {trouves} token(s) envoyés.")
     except Exception as e:
+        print(f"[Erreur DexScreener] {e}")
         send_telegram(f"⚠️ Erreur lors du scan : {e}")
 
 def main():
-    print("=== Démarrage du scanner interactif ===")
-    send_telegram("🚀 *Scanner prêt !* Envoyez *s* pour lancer un scan.")
+    print("=== Bot démarré avec succès ===")
+    send_telegram("🚀 <b>Scanner connecté et prêt !</b>\nEnvoyez la lettre <b>s</b> pour scanner.")
 
+    # Récupération propre des messages
     offset = None
     while True:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-            params = {"timeout": 20}
+            params = {"timeout": 10}
             if offset:
                 params["offset"] = offset
 
-            resp = requests.get(url, params=params, timeout=25)
+            resp = requests.get(url, params=params, timeout=15)
             data = resp.json()
 
             for item in data.get("result", []):
                 offset = item["update_id"] + 1
                 msg = item.get("message", {})
                 texte = msg.get("text", "").strip().lower()
+                print(f"[Message reçu] : {texte}")
 
                 if texte in ["s", "scan", "/scan", "/start"]:
                     scanner_et_envoyer()
 
         except Exception as e:
+            print(f"[Boucle Telegram] {e}")
             time.sleep(2)
 
 if __name__ == "__main__":
