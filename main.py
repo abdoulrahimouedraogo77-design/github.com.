@@ -1,11 +1,11 @@
+
 import sys
 import time
 import requests
 
-# Force l'affichage immédiat dans les logs Railway
 sys.stdout.reconfigure(line_buffering=True)
 
-TELEGRAM_BOT_TOKEN = 8646433044:AAGlwrPeXXbnL-EGCKJBFPpZkEIJzWBRUuY
+TELEGRAM_BOT_TOKEN = "8646433044:AAGlwrPeXXbnL-EGCKJBFPpZkEIJzWBRUuY"
 TELEGRAM_CHAT_ID = "8762743073"
 
 MIN_MARKET_CAP = 15000
@@ -80,20 +80,16 @@ def scanner_et_envoyer():
         send_telegram(f"⚠️ Erreur lors du scan : {e}")
 
 def main():
-    print("=== Nettoyage et initialisation Telegram ===")
+    print("=== Démarrage du scanner interactif ===")
     
-    # Étape 1 : Débloquer Telegram (supprime tout ancien webhook résiduel)
     try:
         del_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true"
         requests.get(del_url, timeout=10)
-        print("[Telegram] Webhook supprimé et file nettoyée avec succès.")
     except Exception as e:
-        print(f"[Telegram Init Warning] {e}")
+        print(f"[Webhook Init Error] {e}")
 
-    # Étape 2 : Envoyer le message de confirmation
     send_telegram("🟢 <b>Scanner interactif opérationnel !</b>\nEnvoyez la lettre <b>s</b> pour scanner.")
 
-    # Étape 3 : Écoute en continu
     offset = None
     while True:
         try:
