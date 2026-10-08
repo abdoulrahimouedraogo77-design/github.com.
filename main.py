@@ -2,20 +2,22 @@ import sys
 import time
 import requests
 
+# Forcer l'affichage dans les logs Railway
 sys.stdout.reconfigure(line_buffering=True)
 
 TELEGRAM_BOT_TOKEN = "8646433044:AAGlwrPeXXbnL-EGCKJBFPpZkEIJzWBRUuY"
 TELEGRAM_CHAT_ID = "8762743073"
 
-# --- FILTRES EQUILIBRÉS ---
-MIN_MARKET_CAP = 15000       # MC min : $15k
-MIN_VOLUME_5M = 1500         # Volume 5m min : $1.5k
-MIN_LIQUIDITY_USD = 5000     # Liquidité min : $5k
-MIN_AGE_SECONDS = 3 * 60     # Âge min : 3 min
-MAX_AGE_SECONDS = 24 * 3600  # Âge max : 24 heures
+# --- FILTRES TRADING MEMECOINS ---
+MIN_MC = 10000            # MC min : $10k (évite les tokens morts)
+MAX_MC = 500000           # MC max : $500k (garde le potentiel de multiplicateur x2, x5, x10)
+MIN_LIQUIDITY = 4000      # Liquidité min dans la pool : $4k
+MIN_VOLUME_5M = 1500      # Volume récent 5m : min $1 500 (activité acheteuse)
+MIN_AGE_MIN = 3           # Âge min : 3 minutes (évite le premier bloc de snipers bots)
+MAX_AGE_HOURS = 8         # Âge max : 8 heures (focus memecoins frais)
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
 }
 
 def send_telegram(text, reply_markup=None):
@@ -34,47 +36,48 @@ def send_telegram(text, reply_markup=None):
     except Exception as e:
         print(f"[Erreur Telegram] {e}")
 
-def get_security_details(mint_address):
-    """Vérifie la sécurité sans bloquer le script en cas d'erreur API"""
-    url = f"https://api.rugcheck.xyz/v1/tokens/{mint_address}/report/summary"
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=4)
-        if r.status_code == 200:
-            data = r.json()
-            score = data.get("score", "N/A")
-            token_meta = data.get("token", {})
-            mint_auth = "✅ Révoqué" if token_meta.get("mintAuthority") is None else "⚠️ Actif"
-            freeze_auth = "✅ Révoqué" if token_meta.get("freezeAuthority") is None else "⚠️ Actif"
-            
-            top10_share = 0
-            for h in (data.get("topHolders") or [])[:10]:
-                top10_share += float(h.get("pct", 0))
-            
-            return {
-                "ok": True,
-                "score": score,
-                "mint": mint_auth,
-                "freeze": freeze_auth,
-                "top10": f"{top10_share:.1f}%" if top10_share > 0 else "N/A"
-            }
-    except Exception:
-        pass
-    return {"ok": False}
+def scanner_memecoins():
+    print("[Action] Scan Memecoins Solana en cours...")
+    send_telegram("🚀 <b>Scan Memecoins Solana...</b> Détection des opportunités en cours...")
 
-def scanner_et_envoyer():
-    print("[Action] Scan Solana Elite en cours...")
-    send_telegram("🔎 <b>Scan Solana en cours...</b> Recherche des paires actives...")
+    # Récupération des profils et tokens les plus récents et actifs sur Solana
+    endpoints = [
+        "https://api.dexscreener.com/token-profiles/latest/v1",
+        "https://api.dexscreener.com/latest/dex/search?q=solana"
+    ]
     
-    url = "https://api.dexscreener.com/latest/dex/search?q=solana"
+    seen_addresses = set()
+    trouves = 0
+    now_ms = time.time() * 1000
+
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=10)
-        data = resp.json()
-        pairs = data.get("pairs") or []
-        now_ms = time.time() * 1000
-        trouves = 0
+        # 1. Scanner les derniers tokens boostés / avec profil actif
+        r_profiles = requests.get(endpoints[0], headers=HEADERS, timeout=10)
+        token_addrs = []
+        if r_profiles.status_code == 200:
+            for item in r_profiles.json():
+                if item.get("chainId") == "solana":
+                    token_addrs.append(item.get("tokenAddress"))
+
+        # Interroger les paires de ces tokens récents
+        pairs = []
+        if token_addrs:
+            sample = ",".join(token_addrs[:25])
+            r_tokens = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{sample}", headers=HEADERS, timeout=10)
+            if r_tokens.status_code == 200:
+                pairs.extend(r_tokens.json().get("pairs") or [])
+
+        # Compléter avec la recherche générale Solana
+        r_search = requests.get(endpoints[1], headers=HEADERS, timeout=10)
+        if r_search.status_code == 200:
+            pairs.extend(r_search.json().get("pairs") or [])
 
         for pair in pairs:
             if pair.get("chainId") != "solana":
+                continue
+
+            ca = pair.get("baseToken", {}).get("address", "")
+            if not ca or ca in seen_addresses:
                 continue
 
             created_at = pair.get("pairCreatedAt", 0)
@@ -82,79 +85,76 @@ def scanner_et_envoyer():
                 continue
 
             age_sec = (now_ms - created_at) / 1000
-            if not (MIN_AGE_SECONDS <= age_sec <= MAX_AGE_SECONDS):
+            age_min = age_sec / 60
+            age_hours = age_min / 60
+
+            if not (MIN_AGE_MIN <= age_min and age_hours <= MAX_AGE_HOURS):
                 continue
 
             mc = pair.get("marketCap") or pair.get("fdv", 0)
             vol_5m = pair.get("volume", {}).get("m5", 0)
-            liq_usd = pair.get("liquidity", {}).get("usd", 0)
+            liq = pair.get("liquidity", {}).get("usd", 0)
+            dex_id = pair.get("dexId", "DEX").capitalize()
 
-            # Filtres DexScreener
-            if not (mc >= MIN_MARKET_CAP and vol_5m >= MIN_VOLUME_5M and liq_usd >= MIN_LIQUIDITY_USD):
+            # Application des filtres de trading
+            if not (MIN_MC <= mc <= MAX_MC and liq >= MIN_LIQUIDITY and vol_5m >= MIN_VOLUME_5M):
                 continue
 
-            ca_token = pair.get("baseToken", {}).get("address", "")
+            seen_addresses.add(ca)
+            trouves += 1
+
             nom = pair.get("baseToken", {}).get("name", "Inconnu")
             sym = pair.get("baseToken", {}).get("symbol", "")
-            pair_addr = pair.get("pairAddress", "")
-            url_dex = pair.get("url", f"https://dexscreener.com/solana/{ca_token}")
-            age_min = age_sec / 60
+            price = pair.get("priceUsd", "0")
+            txns_5m = pair.get("txns", {}).get("m5", {})
+            buys = txns_5m.get("buys", 0)
+            sells = txns_5m.get("sells", 0)
 
-            # Récupération infos sécurité
-            sec = get_security_details(ca_token)
-            if sec.get("ok"):
-                sec_text = (
-                    f"🛡️ <b>SÉCURITÉ AUDIT :</b>\n"
-                    f"• Mint : {sec['mint']}\n"
-                    f"• Freeze : {sec['freeze']}\n"
-                    f"• Top 10 Holders : <b>{sec['top10']}</b>\n"
-                    f"• Risque RugCheck : <b>{sec['score']}</b>\n\n"
-                )
-            else:
-                sec_text = "🛡️ <i>Audit complet disponible sur GMGN</i>\n\n"
+            # Format d'âge propre
+            age_label = f"{age_min:.0f}m" if age_min < 60 else f"{age_hours:.1f}h"
 
-            trouves += 1
             msg = (
-                f"💎 <b>TOKEN DÉTECTÉ</b>\n\n"
-                f"🪙 <b>Nom :</b> {nom} (${sym})\n"
-                f"⏳ <b>Âge :</b> {age_min:.0f} min\n"
-                f"💰 <b>Market Cap :</b> ${mc:,.0f}\n"
-                f"📊 <b>Volume 5m :</b> ${vol_5m:,.0f}\n"
-                f"💧 <b>Liquidité :</b> ${liq_usd:,.0f}\n\n"
-                f"{sec_text}"
-                f"📋 <b>CA Token :</b>\n<code>{ca_token}</code>\n"
-                f"🏊 <b>Pool :</b>\n<code>{pair_addr}</code>"
+                f"🔥 <b>MEMECOIN EN VUE</b> ({dex_id})\n\n"
+                f"🪙 <b>{nom}</b> | <code>${sym}</code>\n"
+                f"⏱️ <b>Âge :</b> {age_label}\n"
+                f"💰 <b>MC :</b> ${mc:,.0f} | <b>Prix :</b> ${float(price):.6f}\n"
+                f"💧 <b>Liq :</b> ${liq:,.0f} | <b>Vol 5m :</b> ${vol_5m:,.0f}\n"
+                f"📊 <b>Transactions 5m :</b> 🟢 {buys} buys / 🔴 {sells} sells\n\n"
+                f"📋 <b>CA :</b>\n<code>{ca}</code>"
             )
 
+            # Boutons de trading direct (GMGN, Photon, Trojan Telegram bot, DexScreener)
             keyboard = {
                 "inline_keyboard": [
                     [
-                        {"text": "🟧 GMGN", "url": f"https://gmgn.ai/sol/token/{ca_token}"},
-                        {"text": "🪐 Meteora", "url": f"https://app.meteora.ag/dlmm/{pair_addr}" if pair_addr else "https://app.meteora.ag"}
+                        {"text": "🟧 GMGN Sniper", "url": f"https://gmgn.ai/sol/token/{ca}"},
+                        {"text": "⚡ Photon SOL", "url": f"https://photon-sol.tinyastro.io/en/lp/{pair.get('pairAddress', ca)}"}
                     ],
                     [
-                        {"text": "📋 Copier Token", "callback_data": f"copy_token:{ca_token[:30]}"},
-                        {"text": "📋 Copier Pool", "callback_data": f"copy_pool:{pair_addr[:30]}"}
+                        {"text": "🤖 Trojan Bot", "url": f"https://t.me/solana_trojanbot?start={ca}"},
+                        {"text": "📊 DexScreener", "url": pair.get("url", f"https://dexscreener.com/solana/{ca}")}
                     ],
                     [
-                        {"text": "📊 DexScreener", "url": url_dex}
+                        {"text": "📋 Copier Contrat (CA)", "callback_data": f"ca:{ca[:30]}"}
                     ]
                 ]
             }
+
             send_telegram(msg, reply_markup=keyboard)
 
-            if trouves >= 5:  # Limite à 5 tokens par scan pour ne pas spammer
+            if trouves >= 4:
                 break
 
         if trouves == 0:
-            send_telegram(f"ℹ️ Aucun token ne correspond exactement aux filtres en ce moment (MC > ${MIN_MARKET_CAP:,}, Liq > ${MIN_LIQUIDITY_USD:,}). Réessayez dans quelques instants !")
-        print(f"[Action] Scan terminé : {trouves} token(s) envoyés.")
+            send_telegram("ℹ️ <b>Aucun memecoin ne passe les filtres actuellement.</b>\n(Filtres : MC $10k-$500k, Liq > $4k, Vol 5m > $1.5k). Réessayez dans une minute !")
+        print(f"[Action] Scan Memecoins terminé : {trouves} token(s) envoyés.")
+
     except Exception as e:
         print(f"[Erreur Scan] {e}")
         send_telegram(f"⚠️ Erreur lors du scan : {e}")
 
 def main():
-    print("=== Démarrage du scanner interactif ===")
+    print("=== Démarrage Scanner Memecoin Trading ===")
     try:
         requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true", timeout=10)
     except Exception as e:
@@ -165,7 +165,7 @@ def main():
         "resize_keyboard": True,
         "is_persistent": True
     }
-    send_telegram("🟢 <b>Scanner interactif opérationnel !</b>\nAppuyez sur <b>s</b> pour scanner.", reply_markup=keyboard_reply)
+    send_telegram("🟢 <b>Scanner Memecoin Solana Prêt !</b>\nAppuyez sur <b>s</b> pour trouver les memecoins chauds.", reply_markup=keyboard_reply)
 
     offset = None
     while True:
@@ -183,19 +183,14 @@ def main():
                 msg = item.get("message", {})
                 texte = msg.get("text", "").strip().lower()
                 if texte in ["s", "scan", "/scan", "/start"]:
-                    scanner_et_envoyer()
+                    scanner_memecoins()
 
                 cb = item.get("callback_query", {})
                 if cb:
                     cb_id = cb.get("id")
-                    cb_data = cb.get("data", "")
-                    alert_text = "Adresse sélectionnée"
-                    if cb_data.startswith("copy_"):
-                        val = cb_data.split(":", 1)[-1]
-                        alert_text = f"Adresse : {val}"
                     requests.post(
                         f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
-                        json={"callback_query_id": cb_id, "text": alert_text, "show_alert": False},
+                        json={"callback_query_id": cb_id, "text": "Contrat sélectionné !", "show_alert": False},
                         timeout=5
                     )
 
@@ -205,4 +200,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-            
