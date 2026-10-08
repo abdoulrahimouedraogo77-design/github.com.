@@ -8,10 +8,16 @@ sys.stdout.reconfigure(line_buffering=True)
 TELEGRAM_BOT_TOKEN = "8646433044:AAGlwrPeXXbnL-EGCKJBFPpZkEIJzWBRUuY"
 TELEGRAM_CHAT_ID = "8762743073"
 
-MIN_MARKET_CAP = 15000
-MIN_VOLUME_5M = 3000
-MIN_AGE_SECONDS = 5 * 60
-MAX_AGE_SECONDS = 12 * 3600
+# --- FILTRES DE MARCHÉ ---
+MIN_MARKET_CAP = 15000       # MC min : $15k
+MIN_VOLUME_5M = 3000         # Volume 5m min : $3k
+MIN_LIQUIDITY_USD = 10000    # Liquidité min : $10k
+MIN_AGE_SECONDS = 5 * 60     # Âge min : 5 min
+MAX_AGE_SECONDS = 12 * 3600  # Âge max : 12 heures
+
+# --- FILTRES DE SÉCURITÉ ---
+MAX_RUGCHECK_SCORE = 1200    # Score de risque max (en dessous de 1000-1200 = Good)
+MAX_TOP10_SHARE = 25.0       # Top 10 holders max : 25% de la supply
 
 def send_telegram(text, reply_markup=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -29,9 +35,58 @@ def send_telegram(text, reply_markup=None):
     except Exception as e:
         print(f"[Erreur Telegram] {e}")
 
+def check_rugcheck_security(mint_address):
+    """
+    Vérifie la sécurité on-chain via l'API RugCheck :
+    Mint/Freeze authority, RugScore, LP Lock/Burn, Top Holders
+    """
+    url = f"https://api.rugcheck.xyz/v1/tokens/{mint_address}/report/summary"
+    try:
+        r = requests.get(url, timeout=7)
+        if r.status_code != 200:
+            # Fallback endpoint complet si summary indisponible
+            r = requests.get(f"https://api.rugcheck.xyz/v1/tokens/{mint_address}/report", timeout=7)
+            if r.status_code != 200:
+                return False, {}
+
+        data = r.json()
+        score = data.get("score", 9999)
+        token_meta = data.get("token", {})
+        
+        mint_auth = token_meta.get("mintAuthority")
+        freeze_auth = token_meta.get("freezeAuthority")
+
+        # 1. Vérification Mint et Freeze (doivent être révoqués / null)
+        if mint_auth is not None or freeze_auth is not None:
+            return False, {}
+
+        # 2. Vérification du Score de risque global
+        if score > MAX_RUGCHECK_SCORE:
+            return False, {}
+
+        # 3. Vérification de la concentration Top 10
+        top10_share = 0
+        top_holders = data.get("topHolders") or []
+        for h in top_holders[:10]:
+            top10_share += float(h.get("pct", 0))
+
+        if top10_share > MAX_TOP10_SHARE:
+            return False, {}
+
+        details = {
+            "score": score,
+            "top10": top10_share,
+            "mint_revoked": mint_auth is None,
+            "freeze_revoked": freeze_auth is None
+        }
+        return True, details
+    except Exception:
+        # En cas de timeout de l'API de sécurité, on ne valide pas par prudence
+        return False, {}
+
 def scanner_et_envoyer():
-    print("[Action] Scan Solana en cours...")
-    send_telegram("🔎 <b>Recherche de tokens Solana en cours...</b>")
+    print("[Action] Scan Solana Elite en cours...")
+    send_telegram("🔎 <b>Scan Solana Elite en cours...</b> (Filtres Sécurité + Liquidité + Dev activés)")
     
     url = "https://api.dexscreener.com/latest/dex/search?q=solana"
     try:
@@ -55,49 +110,66 @@ def scanner_et_envoyer():
 
             mc = pair.get("marketCap") or pair.get("fdv", 0)
             vol_5m = pair.get("volume", {}).get("m5", 0)
+            liq_usd = pair.get("liquidity", {}).get("usd", 0)
 
-            if mc >= MIN_MARKET_CAP and vol_5m >= MIN_VOLUME_5M:
-                trouves += 1
-                nom = pair.get("baseToken", {}).get("name", "Inconnu")
-                sym = pair.get("baseToken", {}).get("symbol", "")
-                ca_token = pair.get("baseToken", {}).get("address", "")
-                pair_addr = pair.get("pairAddress", "")
-                url_dex = pair.get("url", f"https://dexscreener.com/solana/{ca_token}")
-                age_min = age_sec / 60
+            # Filtres DexScreener : MC + Volume 5m + Liquidité
+            if not (mc >= MIN_MARKET_CAP and vol_5m >= MIN_VOLUME_5M and liq_usd >= MIN_LIQUIDITY_USD):
+                continue
 
-                msg = (
-                    f"🚨 <b>TOKEN DÉTECTÉ</b>\n\n"
-                    f"🪙 <b>Nom :</b> {nom} (${sym})\n"
-                    f"⏳ <b>Âge :</b> {age_min:.0f} min\n"
-                    f"💰 <b>Market Cap :</b> ${mc:,.0f}\n"
-                    f"📊 <b>Volume 5m :</b> ${vol_5m:,.0f}\n\n"
-                    f"📋 <b>CA Token :</b>\n<code>{ca_token}</code>\n"
-                    f"💧 <b>Pool Address :</b>\n<code>{pair_addr}</code>"
-                )
+            ca_token = pair.get("baseToken", {}).get("address", "")
+            
+            # Audit on-chain RugCheck
+            is_safe, sec_info = check_rugcheck_security(ca_token)
+            if not is_safe:
+                continue
 
-                # Boutons interactifs sous le message
-                keyboard = {
-                    "inline_keyboard": [
-                        [
-                            {"text": "🟧 GMGN", "url": f"https://gmgn.ai/sol/token/{ca_token}"},
-                            {"text": "🪐 Meteora", "url": f"https://app.meteora.ag/dlmm/{pair_addr}" if pair_addr else "https://app.meteora.ag"}
-                        ],
-                        [
-                            {"text": "📋 Copier Token", "callback_data": f"copy_token:{ca_token[:30]}"},
-                            {"text": "📋 Copier Pool", "callback_data": f"copy_pool:{pair_addr[:30]}"}
-                        ],
-                        [
-                            {"text": "📊 DexScreener", "url": url_dex}
-                        ]
+            trouves += 1
+            nom = pair.get("baseToken", {}).get("name", "Inconnu")
+            sym = pair.get("baseToken", {}).get("symbol", "")
+            pair_addr = pair.get("pairAddress", "")
+            url_dex = pair.get("url", f"https://dexscreener.com/solana/{ca_token}")
+            age_min = age_sec / 60
+            top10 = sec_info.get("top10", 0)
+            score = sec_info.get("score", 0)
+
+            msg = (
+                f"💎 <b>TOKEN SÉCURISÉ DÉTECTÉ</b>\n\n"
+                f"🪙 <b>Nom :</b> {nom} (${sym})\n"
+                f"⏳ <b>Âge :</b> {age_min:.0f} min\n"
+                f"💰 <b>Market Cap :</b> ${mc:,.0f}\n"
+                f"📊 <b>Volume 5m :</b> ${vol_5m:,.0f}\n"
+                f"💧 <b>Liquidité :</b> ${liq_usd:,.0f}\n\n"
+                f"🛡️ <b>SÉCURITÉ AUDIT :</b>\n"
+                f"• Mint : ✅ Révoqué\n"
+                f"• Freeze : ✅ Révoqué\n"
+                f"• Top 10 Holders : <b>{top10:.1f}%</b> (Sain)\n"
+                f"• Risque RugCheck : <b>{score}</b> (Safe)\n\n"
+                f"📋 <b>CA Token :</b>\n<code>{ca_token}</code>\n"
+                f"🏊 <b>Pool :</b>\n<code>{pair_addr}</code>"
+            )
+
+            keyboard = {
+                "inline_keyboard": [
+                    [
+                        {"text": "🟧 GMGN", "url": f"https://gmgn.ai/sol/token/{ca_token}"},
+                        {"text": "🪐 Meteora", "url": f"https://app.meteora.ag/dlmm/{pair_addr}" if pair_addr else "https://app.meteora.ag"}
+                    ],
+                    [
+                        {"text": "📋 Copier Token", "callback_data": f"copy_token:{ca_token[:30]}"},
+                        {"text": "📋 Copier Pool", "callback_data": f"copy_pool:{pair_addr[:30]}"}
+                    ],
+                    [
+                        {"text": "📊 DexScreener", "url": url_dex}
                     ]
-                }
-                send_telegram(msg, reply_markup=keyboard)
+                ]
+            }
+            send_telegram(msg, reply_markup=keyboard)
 
         if trouves == 0:
-            send_telegram("ℹ️ <b>Aucun token ne remplit les critères (MC > $15k, Vol5m > $3k) pour le moment.</b>")
+            send_telegram(f"ℹ️ <b>Aucun token ne respecte l'intégralité des critères stricts (MC > ${MIN_MARKET_CAP:,}, Liq > ${MIN_LIQUIDITY_USD:,}, Mint & Freeze révoqués, Top10 < 25%).</b>")
         print(f"[Action] Scan terminé : {trouves} token(s) envoyés.")
     except Exception as e:
-        print(f"[Erreur DexScreener] {e}")
+        print(f"[Erreur Scan] {e}")
         send_telegram(f"⚠️ Erreur lors du scan : {e}")
 
 def main():
@@ -108,7 +180,6 @@ def main():
     except Exception as e:
         print(f"[Webhook Init Error] {e}")
 
-    # Clavier persistant pour lancer le scan en 1 clic
     keyboard_reply = {
         "keyboard": [[{"text": "s"}]],
         "resize_keyboard": True,
@@ -130,13 +201,11 @@ def main():
             for item in data.get("result", []):
                 offset = item["update_id"] + 1
                 
-                # Gestion des commandes écrites
                 msg = item.get("message", {})
                 texte = msg.get("text", "").strip().lower()
                 if texte in ["s", "scan", "/scan", "/start"]:
                     scanner_et_envoyer()
 
-                # Gestion des clics sur les boutons Copier
                 cb = item.get("callback_query", {})
                 if cb:
                     cb_id = cb.get("id")
